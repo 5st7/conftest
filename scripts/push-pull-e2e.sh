@@ -11,7 +11,7 @@ CONTAINER_NAME="conftest-push-pull-e2e"
 
 function cleanup() {
     docker rm $CONTAINER_NAME -f > /dev/null 2>&1
-    rm -rf tmp
+#    rm -rf tmp
 }
 
 # Run the cleanup at the start of the test to ensure the previous
@@ -39,11 +39,13 @@ if [ $? != 0 ]; then
     exit 1
 fi
 
-$CONFTEST verify -p tmp/examples/data/policy -d tmp/examples/data/exclusions tmp/examples/data/service.yaml
+$CONFTEST test -p tmp/examples/data/policy -d tmp/examples/data/exclusions tmp/examples/data/service.yaml
 if [ $? != 0 ]; then
     echo "POLICIES WERE NOT SUCCESSFULLY VERIFIED"
     exit 1
 fi
 
+skopeo copy docker://localhost:5000/test:latest  --tls-verify=false dir:/tmp/are
+cat /tmp/are/manifest.json|jq
 cleanup
 exit 0

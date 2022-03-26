@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 
 	"github.com/open-policy-agent/conftest/policy"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	auth "oras.land/oras-go/pkg/auth/docker"
 	"oras.land/oras-go/pkg/content"
 	orascontext "oras.land/oras-go/pkg/context"
 	"oras.land/oras-go/pkg/oras"
@@ -107,32 +105,43 @@ func NewPushCommand(ctx context.Context, logger *log.Logger) *cobra.Command {
 }
 
 func pushBundle(ctx context.Context, repository string, path string) (*ocispec.Descriptor, error) {
-	cli, err := auth.NewClient()
+	registry, err := content.NewRegistry(content.RegistryOptions{PlainHTTP: false})
 	if err != nil {
-		return nil, fmt.Errorf("get auth client: %w", err)
+		return nil, fmt.Errorf("new registry: %w", err)
 	}
 
-	resolver, err := cli.Resolver(ctx, http.DefaultClient, false)
-	if err != nil {
-		return nil, fmt.Errorf("docker resolver: %w", err)
-	}
-
-	memoryStore := content.NewMemoryStore()
+	memoryStore := content.NewMemory()
 	layers, err := buildLayers(ctx, memoryStore, path)
 	if err != nil {
 		return nil, fmt.Errorf("building layers: %w", err)
 	}
 
-	extraOpts := []oras.PushOpt{oras.WithConfigMediaType(openPolicyAgentConfigMediaType)}
-	manifest, err := oras.Push(ctx, resolver, repository, memoryStore, layers, extraOpts...)
+	config, configDesc, err := content.GenerateConfig(nil)
+	configDesc.MediaType = openPolicyAgentConfigMediaType
 	if err != nil {
+		return nil, fmt.Errorf("generate confi: %w", err)
+	}
+
+	manifest, manifestDesc, err := content.GenerateManifest(&configDesc, nil, layers...)
+	if err != nil {
+		return nil, fmt.Errorf("generate manifest: %w", err)
+	}
+	memoryStore.Set(configDesc, config)
+
+	if err := memoryStore.StoreManifest(repository, manifestDesc, manifest); err != nil {
+		return nil, fmt.Errorf("store manifest: %w", err)
+	}
+
+	desc, err := oras.Copy(ctx, memoryStore, repository, registry, "")
+  log.Println(desc)
+  if err != nil {
 		return nil, fmt.Errorf("pushing manifest: %w", err)
 	}
 
-	return &manifest, nil
+	return &desc, nil
 }
 
-func buildLayers(ctx context.Context, memoryStore *content.Memorystore, path string) ([]ocispec.Descriptor, error) {
+func buildLayers(ctx context.Context, memoryStore *content.Memory, path string) ([]ocispec.Descriptor, error) {
 	engine, err := policy.LoadWithData(ctx, []string{path}, []string{path})
 	if err != nil {
 		return nil, fmt.Errorf("load: %w", err)
@@ -140,11 +149,19 @@ func buildLayers(ctx context.Context, memoryStore *content.Memorystore, path str
 
 	var layers []ocispec.Descriptor
 	for path, contents := range engine.Policies() {
-		layers = append(layers, memoryStore.Add(path, openPolicyAgentPolicyLayerMediaType, []byte(contents)))
+		desc, err := memoryStore.Add(path, openPolicyAgentPolicyLayerMediaType, []byte(contents))
+		if err != nil {
+			return nil, fmt.Errorf("add: %w", err)
+		}
+		layers = append(layers, desc)
 	}
 
 	for path, contents := range engine.Documents() {
-		layers = append(layers, memoryStore.Add(path, openPolicyAgentDataLayerMediaType, []byte(contents)))
+		desc, err := memoryStore.Add(path, openPolicyAgentDataLayerMediaType, []byte(contents))
+		if err != nil {
+			return nil, fmt.Errorf("add: %w", err)
+		}
+		layers = append(layers, desc)
 	}
 
 	return layers, nil

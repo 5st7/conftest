@@ -3,12 +3,10 @@ package downloader
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 
 	getter "github.com/hashicorp/go-getter"
-	auth "oras.land/oras-go/pkg/auth/docker"
 	"oras.land/oras-go/pkg/content"
 	"oras.land/oras-go/pkg/oras"
 )
@@ -31,23 +29,19 @@ func (g *OCIGetter) Get(path string, u *url.URL) error {
 		return fmt.Errorf("make policy directory: %w", err)
 	}
 
-	cli, err := auth.NewClient()
+	registry, err := content.NewRegistry(content.RegistryOptions{PlainHTTP: false})
 	if err != nil {
-		return fmt.Errorf("new auth client: %w", err)
+		return fmt.Errorf("new registry: %w", err)
 	}
 
-	resolver, err := cli.Resolver(ctx, http.DefaultClient, false)
-	if err != nil {
-		return fmt.Errorf("new resolver: %w", err)
-	}
-
-	fileStore := content.NewFileStore(path)
+	fileStore := content.NewFile(path)
 	defer fileStore.Close()
 
 	repository := getRepositoryFromURL(u.Path)
 	pullURL := u.Host + repository
 
-	_, _, err = oras.Pull(ctx, resolver, pullURL, fileStore)
+	oras.WithAdditionalCachedMediaTypes()
+	_, err = oras.Copy(ctx, registry, pullURL, fileStore, "")
 	if err != nil {
 		return fmt.Errorf("pulling policy: %w", err)
 	}
